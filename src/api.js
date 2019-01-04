@@ -7,6 +7,7 @@ var metrics = require('./metrics')
 var warnings = require('./warnings')
 var q = require('q')
 var winston = require('winston')
+var {Transaction, Helpers} = require('blockchain-wallet-client');
 
 function MerchantAPI () {
   this.cache = new WalletCache()
@@ -73,6 +74,33 @@ MerchantAPI.prototype.sendMany = function (guid, options) {
   return this.makePayment(guid, options)
 }
 
+const selectCoins = function (usableCoins, amounts, fee, isAbsoluteFee) {
+  var amount = amounts.reduce(Helpers.add, 0);
+  var sorted = usableCoins.sort(function (a, b) { return b.value - a.value; });
+  var len = sorted.length;
+  var sel = [];
+  var accAm = 0;
+  var accFee = 0;
+
+  if (isAbsoluteFee) {
+    for (var i = 0; i < len; i++) {
+      var coin = sorted[i];
+      accAm = accAm + coin.value;
+      sel.push(coin);
+      if (accAm >= fee + amount) { return {'coins': sel, 'fee': fee, 'coinAmount': accAm}; }
+    }
+  } else {
+    for (var ii = 0; ii < len; ii++) {
+      var coin2 = sorted[ii];
+      accAm = accAm + coin2.value;
+      accFee = Transaction.guessFee(ii + 1, 2, fee);
+      sel.push(coin2);
+      if (accAm >= accFee + amount) { return {'coins': sel, 'fee': accFee, 'coinAmount': accAm}; }
+    }
+  }
+  return {'coins': sel, 'fee': accFee, 'coinAmount': accAm};
+};
+
 MerchantAPI.prototype.getPaymentFee = function (guid, options) {
   return this.getWallet(guid, options)
     .then(requireSecondPassword(options))
@@ -106,9 +134,20 @@ MerchantAPI.prototype.getPaymentFee = function (guid, options) {
             };
           })
           .catch(function(error) {
-            return {
-              error
-            };
+            try {
+              var p = error.payment
+              var usableCoins = Transaction.filterUsableCoins(p.coins, p.feePerKb);
+              var s = selectCoins(usableCoins, p.amounts, p.feePerKb, false);
+              return {
+                fee: s.fee,
+                coinAmount: s.coinAmount
+              };
+            } catch (err) {
+              console.log({err})
+              return {
+                error
+              };
+            }
           });
     })
 }
